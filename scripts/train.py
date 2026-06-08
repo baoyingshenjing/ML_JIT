@@ -243,9 +243,11 @@ def main() -> None:
         t_start = time.time()
 
         for batch_idx, (images, labels) in enumerate(train_loader):
+            epoch_progress = epoch + batch_idx / len(train_loader)
+
             # Warmup LR scheduler (per-iteration)
             lr = adjust_learning_rate(
-                optimizer, epoch + batch_idx / len(train_loader), args,
+                optimizer, epoch_progress, args,
             )
 
             # Image normalization: div 255 then scale to [-1, 1]
@@ -254,8 +256,9 @@ def main() -> None:
             labels = labels.to(device, non_blocking=True)
 
             # bf16 autocast (no grad scaler needed for bf16)
+            denoiser.set_train_progress(epoch_progress)
             with torch.amp.autocast("cuda", dtype=torch.bfloat16):
-                loss = denoiser(images, labels)
+                loss, metrics = denoiser(images, labels)
 
             loss_value = loss.item()
             if not math.isfinite(loss_value):
@@ -273,9 +276,16 @@ def main() -> None:
             if global_step % args.log_every == 0:
                 writer.add_scalar("train/loss", loss_value, global_step)
                 writer.add_scalar("train/lr", lr, global_step)
+                for name, value in metrics.items():
+                    writer.add_scalar(f"train/{name}", value.item(), global_step)
                 logger.info(
-                    "epoch=%d step=%d loss=%.6f lr=%.2e",
-                    epoch, global_step, loss_value, lr,
+                    "epoch=%d step=%d loss=%.6f flow=%.6f scmr=%.6f lambda=%.5f x_mse=%.6f lr=%.2e",
+                    epoch, global_step, loss_value,
+                    metrics["flow_loss"].item(),
+                    metrics["scmr_loss"].item(),
+                    metrics["scmr_lambda"].item(),
+                    metrics["x_pred_mse"].item(),
+                    lr,
                 )
 
             global_step += 1

@@ -38,6 +38,9 @@ class TrainConfig:
     P_std: float = 0.8
     t_eps: float = 5e-2
     noise_scale: float = 1.0
+    scmr_lambda: float = 0.0
+    scmr_stopgrad: bool = False
+    scmr_warmup_epochs: int = 50
 
     # optimization
     lr: float | None = None
@@ -128,6 +131,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--P-std", type=float, default=0.8)
     parser.add_argument("--t-eps", type=float, default=5e-2)
     parser.add_argument("--noise-scale", type=float, default=1.0)
+    parser.add_argument(
+        "--scmr-lambda",
+        type=float,
+        default=0.0,
+        help="Target SCMR weight. Recommended sweep: 0.001, 0.003, 0.01, 0.03.",
+    )
+    parser.add_argument(
+        "--scmr-stopgrad",
+        action="store_true",
+        help="Use stop-gradient SCMR target: ||sg(xhat1) - xhat2||^2.",
+    )
+    parser.add_argument(
+        "--scmr-warmup-epochs",
+        type=int,
+        default=50,
+        help="Linearly ramp SCMR lambda from 0 to target over this many epochs.",
+    )
 
     # optimization
     parser.add_argument("--lr", type=float, default=None, help="Absolute learning rate (if set, overrides blr)")
