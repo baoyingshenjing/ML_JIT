@@ -33,6 +33,14 @@ class Denoiser(nn.Module):
         self.scmr_lambda = getattr(args, "scmr_lambda", 0.0)
         self.scmr_stopgrad = getattr(args, "scmr_stopgrad", False)
         self.scmr_warmup_epochs = getattr(args, "scmr_warmup_epochs", 50)
+        self.snp_enable = getattr(args, "snp_enable", False)
+        self.snp_mask_min = getattr(args, "snp_mask_min", 32)
+        self.snp_mask_max = getattr(args, "snp_mask_max", 128)
+        self.snp_noise_in = getattr(args, "snp_noise_in", 0.5)
+        self.snp_noise_out = getattr(args, "snp_noise_out", 1.0)
+        self.tctm_enable = getattr(args, "tctm_enable", False)
+        self.tctm_t_threshold = getattr(args, "tctm_t_threshold", 0.3)
+        self.tctm_merge_ratio = getattr(args, "tctm_merge_ratio", 0.5)
         self.train_progress = 0.0
         self.num_t_bins = 5
 
@@ -63,9 +71,39 @@ class Denoiser(nn.Module):
         t = sample_logit_normal_t(
             x.size(0), self.P_mean, self.P_std, device=x.device
         ).view(-1, *([1] * (x.ndim - 1)))
-        e = torch.randn_like(x) * self.noise_scale
+
+        if self.training and self.snp_enable:
+            e = self._structured_noise(x)
+        else:
+            e = torch.randn_like(x) * self.noise_scale
+
         z = t * x + (1.0 - t) * e
         return t, z, e
+
+    def _structured_noise(self, x: torch.Tensor) -> torch.Tensor:
+        """SNP: random rectangular regions get different noise scales.
+
+        For each image in the batch, sample 1-3 random rectangles.
+        Inside rectangles: snp_noise_in (lower noise, preserve structure).
+        Outside rectangles: snp_noise_out (full noise).
+        """
+        B, C, H, W = x.shape
+        e = torch.randn_like(x)
+        # Start with full noise everywhere
+        noise_map = torch.full((B, 1, H, W), self.snp_noise_out, device=x.device)
+
+        # Random number of rectangles per image (1 to 3)
+        num_rects = torch.randint(1, 4, (B,), device=x.device)
+        for b in range(B):
+            for _ in range(num_rects[b].item()):
+                size = torch.randint(
+                    self.snp_mask_min, self.snp_mask_max + 1, (2,), device=x.device
+                )
+                y = torch.randint(0, max(1, H - size[0].item() + 1), (1,), device=x.device).item()
+                x0 = torch.randint(0, max(1, W - size[1].item() + 1), (1,), device=x.device).item()
+                noise_map[b, 0, y:y + size[0].item(), x0:x0 + size[1].item()] = self.snp_noise_in
+
+        return e * noise_map
 
     def _add_t_bin_metrics(
         self,
@@ -154,8 +192,21 @@ class Denoiser(nn.Module):
         for i in range(self.steps - 1):
             t = timesteps[i]
             t_next = timesteps[i + 1]
+
+            # TCTM: spatial downsampling for high-noise steps
+            z_input = z
+            if self.tctm_enable and t.mean().item() < self.tctm_t_threshold:
+                _, _, h, w = z.shape
+                new_h, new_w = max(2, int(h * self.tctm_merge_ratio)), max(2, int(w * self.tctm_merge_ratio))
+                z_input = torch.nn.functional.interpolate(
+                    z, size=(new_h, new_w), mode="bilinear", align_corners=False
+                )
+                z_input = torch.nn.functional.interpolate(
+                    z_input, size=(h, w), mode="bilinear", align_corners=False
+                )
+
             z = stepper(
-                self.net, z, t, t_next, labels,
+                self.net, z_input, t, t_next, labels,
                 num_classes=self.num_classes,
                 cfg_scale=self.cfg_scale,
                 t_eps=self.t_eps,

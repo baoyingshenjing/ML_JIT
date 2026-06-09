@@ -41,6 +41,11 @@ class TrainConfig:
     scmr_lambda: float = 0.0
     scmr_stopgrad: bool = False
     scmr_warmup_epochs: int = 50
+    snp_enable: bool = False
+    snp_mask_size_min: int = 32
+    snp_mask_size_max: int = 128
+    snp_noise_in: float = 0.5
+    snp_noise_out: float = 1.0
 
     # optimization
     lr: float | None = None
@@ -148,6 +153,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=50,
         help="Linearly ramp SCMR lambda from 0 to target over this many epochs.",
     )
+    parser.add_argument("--snp-enable", action="store_true", help="Enable Structured Noise Process")
+    parser.add_argument("--snp-mask-min", type=int, default=32)
+    parser.add_argument("--snp-mask-max", type=int, default=128)
+    parser.add_argument("--snp-noise-in", type=float, default=0.5)
+    parser.add_argument("--snp-noise-out", type=float, default=1.0)
+    parser.add_argument("--tctm-enable", action="store_true", help="Enable Time-Conditioned Token Merging (sampling only)")
+    parser.add_argument("--tctm-t-threshold", type=float, default=0.3, help="TCTM t threshold: merge when t < this")
+    parser.add_argument("--tctm-merge-ratio", type=float, default=0.5, help="TCTM merge ratio for spatial downsampling")
 
     # optimization
     parser.add_argument("--lr", type=float, default=None, help="Absolute learning rate (if set, overrides blr)")
