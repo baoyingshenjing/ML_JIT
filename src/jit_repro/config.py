@@ -192,6 +192,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output-dir", type=str, default="./output")
     parser.add_argument("--data-path", type=str, default="./data")
     parser.add_argument("--resume", type=str, default="")
+    parser.add_argument("--pretrained", type=str, default="", help="Load pretrained weights before training")
     parser.add_argument("--checkpoint", type=str, default="")
     parser.add_argument("--num-images", type=int, default=50000)
 

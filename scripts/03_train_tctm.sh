@@ -18,20 +18,21 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # ---- Config ----
-MODEL="${MODEL:-JiT-B/32}"
+MODEL="${MODEL:-JiT-B/16}"
 IMG_SIZE="${IMG_SIZE:-256}"
 DATA_PATH="${DATA_PATH:-./data/imagenet_2000}"
 BASELINE_DIR="${BASELINE_DIR:-./output/baseline_${MODEL//\//_}}"
 OUTPUT_DIR="${OUTPUT_DIR:-./output/tctm_${MODEL//\//_}}"
 BATCH_SIZE="${BATCH_SIZE:-32}"
-EPOCHS="${EPOCHS:-100}"
+EPOCHS="${EPOCHS:-20}"
 SEED="${SEED:-42}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 EVAL_FREQ="${EVAL_FREQ:-20}"
+PRETRAINED="${PRETRAINED:-./pretrained_weights/jit_b16_256_pretrained.pt}"
 
 # TCTM 超参
-TCTM_T_THRESHOLD="${TCTM_T_THRESHOLD:-0.3}"     # t < 此值时启用合并
-TCTM_MERGE_RATIO="${TCTM_MERGE_RATIO:-0.5}"     # 合并比例 (0.5 = 降采样到50%再回)
+TCTM_T_THRESHOLD="${TCTM_T_THRESHOLD:-0.7}"     # t < 此值时跳过步骤
+TCTM_MERGE_RATIO="${TCTM_MERGE_RATIO:-0.33}"     # 步长倍数 (0.33 = 3x步长)
 
 # ---- 检查数据 ----
 if [ ! -d "$DATA_PATH/train" ]; then
@@ -52,31 +53,9 @@ echo "========================================"
 
 cd "$REPO_ROOT"
 
-# ---- Step 1: Train baseline (if no checkpoint) ----
-LATEST_CKPT=$(ls -t "$BASELINE_DIR"/checkpoint-*.pt 2>/dev/null | head -1 || echo "")
-
-if [ -z "$LATEST_CKPT" ]; then
-    echo "[INFO] 无 baseline checkpoint，先训练 baseline..."
-    mkdir -p "$BASELINE_DIR"
-
-    python3 scripts/train.py \
-        --model "$MODEL" \
-        --img-size "$IMG_SIZE" \
-        --data-path "$DATA_PATH" \
-        --output-dir "$BASELINE_DIR" \
-        --batch-size "$BATCH_SIZE" \
-        --epochs "$EPOCHS" \
-        --seed "$SEED" \
-        --num-workers "$NUM_WORKERS" \
-        --eval-freq "$EVAL_FREQ" \
-        --online-eval \
-        --class-num "$(ls -d "$DATA_PATH"/train/*/ 2>/dev/null | wc -l)" \
-        ${EXTRA_ARGS:-}
-
-    LATEST_CKPT=$(ls -t "$BASELINE_DIR"/checkpoint-*.pt 2>/dev/null | head -1)
-fi
-
-echo "[INFO] Using checkpoint: $LATEST_CKPT"
+# ---- Step 1: Use pretrained checkpoint directly ----
+CKPT="$PRETRAINED"
+echo "[INFO] Using pretrained checkpoint: $CKPT"
 
 # ---- Step 2: 用 TCTM 做 generation + FID 评估 ----
 echo ""
@@ -86,15 +65,12 @@ echo "========================================"
 
 mkdir -p "$OUTPUT_DIR"
 
-python3 -c "
-import torch
-import sys
-sys.path.insert(0, '$REPO_ROOT/src')
+python3 << PYEOF
+import torch, os, numpy as np, cv2, argparse, sys
+sys.path.insert(0, 'src')
 from jit_repro.denoiser import Denoiser
-import argparse
 
-# Load checkpoint
-ckpt = torch.load('$LATEST_CKPT', map_location='cuda')
+ckpt = torch.load('$CKPT', map_location='cuda')
 args = argparse.Namespace(
     model='$MODEL', img_size=$IMG_SIZE, class_num=1000,
     attn_dropout=0.0, proj_dropout=0.0,
@@ -108,16 +84,12 @@ args = argparse.Namespace(
 )
 
 model = Denoiser(args).cuda()
-# Load EMA params
-ema_state = {}
-for (name, _), param in zip(model.named_parameters(), ckpt['model_ema1'].values()):
-    ema_state[name] = param.cuda()
-model.load_state_dict(ema_state)
+# Load using checkpoint's 'model' key (our format)
+model.load_state_dict(ckpt['model'])
 model.eval()
 
 print(f'Generating with TCTM (t<{model.tctm_t_threshold}, merge={model.tctm_merge_ratio})...')
 
-import os, numpy as np, cv2
 num_images = 500
 class_num = args.class_num
 labels = torch.arange(class_num).repeat(num_images // class_num + 1)[:num_images].cuda()
@@ -138,8 +110,41 @@ with torch.amp.autocast('cuda', dtype=torch.bfloat16):
             print(f'  Generated {i+len(batch_labels)}/{num_images}')
 
 print(f'Generated {num_images} images to {save_dir}')
-print('Done! (FID evaluation requires torch-fidelity and reference stats)')
-" 2>&1
+
+# Also generate without TCTM for comparison
+args2 = argparse.Namespace(
+    model='$MODEL', img_size=$IMG_SIZE, class_num=1000,
+    attn_dropout=0.0, proj_dropout=0.0,
+    label_drop_prob=0.1, P_mean=-0.8, P_std=0.8, t_eps=5e-2, noise_scale=1.0,
+    scmr_lambda=0.0, scmr_stopgrad=False, scmr_warmup_epochs=50,
+    snp_enable=False,
+    tctm_enable=False, tctm_t_threshold=$TCTM_T_THRESHOLD, tctm_merge_ratio=$TCTM_MERGE_RATIO,
+    ema_decay1=0.9999, ema_decay2=0.9996,
+    sampling_method='heun', num_sampling_steps=50, cfg=1.0,
+    interval_min=0.0, interval_max=1.0,
+)
+model_no_tctm = Denoiser(args2).cuda()
+model_no_tctm.load_state_dict(ckpt['model'])
+model_no_tctm.eval()
+
+save_dir_no = '$OUTPUT_DIR/generated_no_tctm'
+os.makedirs(save_dir_no, exist_ok=True)
+print(f'Generating without TCTM for comparison...')
+
+torch.manual_seed(42)
+with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+    for i in range(0, min(100, num_images), 64):
+        batch_labels = labels[i:i+64]
+        gen = model_no_tctm.generate(batch_labels)
+        gen = (gen + 1) / 2
+        gen = gen.clamp(0, 1).cpu()
+        for j in range(gen.size(0)):
+            img = (gen[j].permute(1,2,0).numpy() * 255).astype(np.uint8)[:, :, ::-1]
+            cv2.imwrite(os.path.join(save_dir_no, f'{i+j:05d}.png'), img)
+
+print(f'Generated baseline images to {save_dir_no}')
+print('Done!')
+PYEOF
 
 echo ""
 echo "========================================"

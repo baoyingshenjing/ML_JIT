@@ -201,7 +201,7 @@ def main() -> None:
 
     logger.info("Building model: %s", args.model)
     denoiser = Denoiser(args).to(device)
-    if args.compile and not args.no_compile:
+    if not args.no_compile:
         logger.info("Enabling torch.compile on network")
         denoiser.net = torch.compile(denoiser.net)
 
@@ -225,6 +225,19 @@ def main() -> None:
 
     start_epoch = 0
     global_step = 0
+
+    if args.pretrained:
+        logger.info("Loading pretrained weights from %s", args.pretrained)
+        checkpoint = torch.load(args.pretrained, map_location=device)
+        state = checkpoint["model"]
+        # Handle torch.compile _orig_mod prefix mismatch
+        model_keys = list(dict(denoiser.named_parameters()).keys())
+        if any('_orig_mod' in k for k in model_keys):
+            state = {k.replace('net.', 'net._orig_mod.'): v for k, v in state.items()}
+        denoiser.load_state_dict(state)
+        if "ema" in checkpoint:
+            denoiser.ema.load_state_dict(checkpoint["ema"], model_device=device)
+        logger.info("Pretrained weights loaded")
 
     if args.resume:
         logger.info("Resuming from %s", args.resume)
@@ -326,7 +339,7 @@ def main() -> None:
             logger.info("Saved checkpoint to %s", save_path)
 
         # Online evaluation with FID
-        if args.online_eval and (epoch % args.eval_freq == 0 or (epoch + 1) == args.epochs):
+        if args.online_eval and epoch > 0 and (epoch % args.eval_freq == 0 or (epoch + 1) == args.epochs):
             torch.cuda.empty_cache()
             with torch.no_grad():
                 online_evaluate(denoiser, args, epoch, writer)

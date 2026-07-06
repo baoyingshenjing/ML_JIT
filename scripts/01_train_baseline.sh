@@ -14,17 +14,18 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # ---- Config (可环境变量覆盖) ----
-MODEL="${MODEL:-JiT-B/32}"                    # JiT-B/16, JiT-B/32
+MODEL="${MODEL:-JiT-B/16}"                    # JiT-B/16, JiT-B/32
 IMG_SIZE="${IMG_SIZE:-256}"
 DATA_PATH="${DATA_PATH:-./data/imagenet_2000}"
 OUTPUT_DIR="${OUTPUT_DIR:-./output/baseline_${MODEL//\//_}}"
 BATCH_SIZE="${BATCH_SIZE:-32}"                # 子集小，batch也小
-EPOCHS="${EPOCHS:-100}"                       # 子集快速实验
+EPOCHS="${EPOCHS:-20}"                        # Fine-tuning epochs
 LR="${LR:-}"                                  # 留空 → 自动 blr*bsz/256
 SEED="${SEED:-42}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 EVAL_FREQ="${EVAL_FREQ:-20}"                  # 每20 epoch做一次online eval
 EXTRA_ARGS="${EXTRA_ARGS:-}"                  # 透传额外参数
+PRETRAINED="${PRETRAINED:-./pretrained_weights/jit_b16_256_pretrained.pt}"
 
 # ---- 检查数据 ----
 if [ ! -d "$DATA_PATH/train" ]; then
@@ -60,7 +61,8 @@ python3 scripts/train.py \
     --seed "$SEED" \
     --num-workers "$NUM_WORKERS" \
     --eval-freq "$EVAL_FREQ" \
-    --online-eval \
+    ${ONLINE_EVAL:+--online-eval} \
+    --pretrained "$PRETRAINED" \
     --class-num "$(ls -d "$DATA_PATH"/train/*/ 2>/dev/null | wc -l)" \
     ${LR:+--lr "$LR"} \
     ${EXTRA_ARGS}

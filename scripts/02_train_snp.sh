@@ -17,15 +17,16 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # ---- Config ----
-MODEL="${MODEL:-JiT-B/32}"
+MODEL="${MODEL:-JiT-B/16}"
 IMG_SIZE="${IMG_SIZE:-256}"
 DATA_PATH="${DATA_PATH:-./data/imagenet_2000}"
 OUTPUT_DIR="${OUTPUT_DIR:-./output/snp_${MODEL//\//_}}"
 BATCH_SIZE="${BATCH_SIZE:-32}"
-EPOCHS="${EPOCHS:-100}"
+EPOCHS="${EPOCHS:-20}"
 SEED="${SEED:-42}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 EVAL_FREQ="${EVAL_FREQ:-20}"
+PRETRAINED="${PRETRAINED:-./pretrained_weights/jit_b16_256_pretrained.pt}"
 
 # SNP 超参
 SNP_MASK_MIN="${SNP_MASK_MIN:-32}"       # 矩形最小边长 (px)
@@ -65,7 +66,8 @@ python3 scripts/train.py \
     --seed "$SEED" \
     --num-workers "$NUM_WORKERS" \
     --eval-freq "$EVAL_FREQ" \
-    --online-eval \
+    ${ONLINE_EVAL:+--online-eval} \
+    --pretrained "$PRETRAINED" \
     --class-num "$(ls -d "$DATA_PATH"/train/*/ 2>/dev/null | wc -l)" \
     --snp-enable \
     --snp-mask-min "$SNP_MASK_MIN" \

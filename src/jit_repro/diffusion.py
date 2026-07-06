@@ -46,10 +46,14 @@ class EMA:
 
     def update(self, model: nn.Module) -> None:
         source_params = list(model.parameters())
+        if len(self.ema_params1) > 0 and self.ema_params1[0].device != source_params[0].device:
+            device = source_params[0].device
+            self.ema_params1 = [p.to(device) for p in self.ema_params1]
+            self.ema_params2 = [p.to(device) for p in self.ema_params2]
         for targ, src in zip(self.ema_params1, source_params):
-            targ.detach().mul_(self.decay1).add_(src.detach(), alpha=1.0 - self.decay1)
+            targ.mul_(self.decay1).add_(src.detach(), alpha=1.0 - self.decay1)
         for targ, src in zip(self.ema_params2, source_params):
-            targ.detach().mul_(self.decay2).add_(src.detach(), alpha=1.0 - self.decay2)
+            targ.mul_(self.decay2).add_(src.detach(), alpha=1.0 - self.decay2)
 
     def copy_to(self, model: nn.Module, which: int = 1) -> None:
         params = self.ema_params1 if which == 1 else self.ema_params2

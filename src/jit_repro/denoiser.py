@@ -189,29 +189,33 @@ class Denoiser(nn.Module):
         else:
             raise NotImplementedError(f"Unknown sampling method: {self.method}")
 
-        for i in range(self.steps - 1):
+        i = 0
+        while i < self.steps - 1:
             t = timesteps[i]
-            t_next = timesteps[i + 1]
 
-            # TCTM: spatial downsampling for high-noise steps
-            z_input = z
+            # TCTM: skip coarse steps at high noise by doubling step size
             if self.tctm_enable and t.mean().item() < self.tctm_t_threshold:
-                _, _, h, w = z.shape
-                new_h, new_w = max(2, int(h * self.tctm_merge_ratio)), max(2, int(w * self.tctm_merge_ratio))
-                z_input = torch.nn.functional.interpolate(
-                    z, size=(new_h, new_w), mode="bilinear", align_corners=False
+                skip = max(1, int(1.0 / self.tctm_merge_ratio))
+                next_i = min(i + skip, self.steps - 1)
+                t_next = timesteps[next_i]
+                z = stepper(
+                    self.net, z, t, t_next, labels,
+                    num_classes=self.num_classes,
+                    cfg_scale=self.cfg_scale,
+                    t_eps=self.t_eps,
+                    cfg_interval=self.cfg_interval,
                 )
-                z_input = torch.nn.functional.interpolate(
-                    z_input, size=(h, w), mode="bilinear", align_corners=False
+                i = next_i
+            else:
+                t_next = timesteps[i + 1]
+                z = stepper(
+                    self.net, z, t, t_next, labels,
+                    num_classes=self.num_classes,
+                    cfg_scale=self.cfg_scale,
+                    t_eps=self.t_eps,
+                    cfg_interval=self.cfg_interval,
                 )
-
-            z = stepper(
-                self.net, z_input, t, t_next, labels,
-                num_classes=self.num_classes,
-                cfg_scale=self.cfg_scale,
-                t_eps=self.t_eps,
-                cfg_interval=self.cfg_interval,
-            )
+                i += 1
 
         # Last step always Euler
         z = euler_step(
